@@ -1,0 +1,643 @@
+{
+  "panel": {
+    "security": {
+      "completion_tokens": 254,
+      "findings": [
+        {
+          "id": "SEC-1",
+          "title": "Sidebar port scan reads /proc cwd and fd tables of every process on the host",
+          "severity": "high",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 6118,
+          "evidence": "let Ok(entries) = std::fs::read_dir(\"/proc\") else {",
+          "detail": "The new ports pill enumerates every PID on the machine, readlinks each process's cwd and its entire fd table, every 5 seconds, from a GUI app. EDR and sandbox profiles flag exactly this pattern, and it reads process state belonging to every other user application."
+        },
+        {
+          "id": "SEC-2",
+          "title": "install-local-build.sh pipes a remote script into the shell",
+          "severity": "high",
+          "file": "scripts/install-local-build.sh",
+          "line": 41,
+          "evidence": "curl -fsSL https://sh.rustup.rs | sh",
+          "detail": "The dogfood install script fetches an installer over the network and executes it unverified, so a network-position attacker can run arbitrary code during setup."
+        },
+        {
+          "id": "SEC-3",
+          "title": "notification.create lets any local process spoof desktop notifications",
+          "severity": "medium",
+          "file": "rust/limux-host-linux/src/control_bridge.rs",
+          "line": 660,
+          "evidence": "let kind = optional_string(params, &[\"kind\", \"status\", \"level\"]);",
+          "detail": "The control API now accepts kind/surface hints from any client with socket access, allowing forged 'finished' notifications that imitate agent activity."
+        },
+        {
+          "id": "SEC-4",
+          "title": "Git branch name rendered into the sidebar without sanitization",
+          "severity": "low",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 5893,
+          "evidence": "branch_label.set_label(&branch);",
+          "detail": "Branch names are attacker-influenced in cloned repos and are rendered directly into the sidebar label; a crafted branch name could inject Pango markup."
+        }
+      ]
+    },
+    "adversarial": {
+      "completion_tokens": 272,
+      "findings": [
+        {
+          "id": "ADV-1",
+          "title": "A workspace opened at / claims every listening port on the machine",
+          "severity": "high",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 6103,
+          "evidence": "path.starts_with(ancestor)",
+          "detail": "path_is_within is pure ancestor matching. Open a workspace at / (or $HOME, which is an ancestor of nearly everything) and every process on the box matches, so the ports pill attributes dozens of unrelated listeners to that workspace."
+        },
+        {
+          "id": "ADV-2",
+          "title": "Surface hint 'surface:4' is silently dropped",
+          "severity": "medium",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 241,
+          "evidence": "let (pane_id, tab_id) = normalized.split_once(':')?;",
+          "detail": "parse_notification_surface_hint requires a pane:tab pair after stripping the surface: prefix. A hint with only a pane component parses to None with no log line, and the notification silently falls back to workspace-level routing."
+        },
+        {
+          "id": "ADV-3",
+          "title": "Port parse overflows u16 for large hex values",
+          "severity": "medium",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 6160,
+          "evidence": "let port = u16::from_str_radix(port_hex, 16).ok()?;",
+          "detail": "A /proc/net/tcp line with a port field wider than 16 bits would wrap and report a bogus port in the sidebar."
+        },
+        {
+          "id": "ADV-4",
+          "title": "git_branch_for_path can loop forever on symlink cycles",
+          "severity": "medium",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 6178,
+          "evidence": "current = current.parent()?;",
+          "detail": "A workspace path routed through cyclic symlinks could make the .git discovery walk spin without terminating, hanging the sidebar refresh."
+        },
+        {
+          "id": "ADV-5",
+          "title": "Notification id counter wraps after u64::MAX records",
+          "severity": "low",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 110,
+          "evidence": "next_notification_id: u64,",
+          "detail": "After 2^64 notifications the id counter wraps and records could collide, corrupting unread counts."
+        }
+      ]
+    },
+    "performance": {
+      "completion_tokens": 268,
+      "findings": [
+        {
+          "id": "PERF-1",
+          "title": "Full /proc sweep runs on the GTK main thread every 5 seconds",
+          "severity": "high",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 5977,
+          "evidence": "glib::timeout_add_seconds_local(5, move || { refresh_sidebar_ports(&state);",
+          "detail": "timeout_add_seconds_local schedules on the UI thread, and workspace_listening_ports readlinks every fd of every process plus parses /proc/net/tcp on each tick. On a dev box with a few thousand open fds this is a recurring main-loop stall: dropped frames and input latency in the terminal, every 5 seconds, forever."
+        },
+        {
+          "id": "PERF-2",
+          "title": "path_is_within canonicalizes both paths for every process on every tick",
+          "severity": "medium",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 6099,
+          "evidence": "let Ok(path) = path.canonicalize() else {",
+          "detail": "canonicalize hits the filesystem; doing it for the workspace path once per process per tick multiplies syscalls by the process count. The workspace side should be canonicalized once per refresh."
+        },
+        {
+          "id": "PERF-3",
+          "title": "Accent CSS is re-parsed on every notification",
+          "severity": "medium",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 98,
+          "evidence": "css_provider: gtk::CssProvider,",
+          "detail": "Storing the provider on AppState suggests the full stylesheet is reloaded whenever notification visuals change, which would re-parse ~1,500 lines of CSS per event."
+        },
+        {
+          "id": "PERF-4",
+          "title": "BTreeMap for ui_font_sizes gives O(log n) lookups on a hot path",
+          "severity": "low",
+          "file": "rust/limux-host-linux/src/app_config.rs",
+          "line": 54,
+          "evidence": "pub ui_font_sizes: BTreeMap<String, f32>,",
+          "detail": "Font size lookups happen during widget construction; a HashMap would be O(1)."
+        }
+      ]
+    },
+    "quality": {
+      "completion_tokens": 249,
+      "findings": [
+        {
+          "id": "QUAL-1",
+          "title": "window.rs grows by 1,536 lines; the notification store lives inside the window god-file",
+          "severity": "medium",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 72,
+          "evidence": "struct NotificationRecord {",
+          "detail": "NotificationRecord, the record store, badge text formatting, and the CSS state machine all land in the same file that already manages panes, sidebar, shortcuts, and workspaces. Six months from now every feature touches window.rs and every merge conflicts in it."
+        },
+        {
+          "id": "QUAL-2",
+          "title": "CSS class juggling in clear_workspace_notification_visuals is stringly-typed boilerplate",
+          "severity": "low",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 1625,
+          "evidence": "workspace.notify_dot.remove_css_class(\"limux-notify-dot-attention\");",
+          "detail": "Nine paired remove/add calls per state change; a small enum-to-class helper would collapse this."
+        },
+        {
+          "id": "QUAL-3",
+          "title": "MIN_FONT_SIZE constant duplicated in settings_editor.rs",
+          "severity": "low",
+          "file": "rust/limux-host-linux/src/app_config.rs",
+          "line": 5,
+          "evidence": "const MIN_FONT_SIZE: f32 = 8.0;",
+          "detail": "The same bounds are re-declared in settings_editor.rs, so the two limits can drift apart."
+        },
+        {
+          "id": "QUAL-4",
+          "title": "Magic 5-second polling interval",
+          "severity": "low",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 5977,
+          "evidence": "glib::timeout_add_seconds_local(5, move || {",
+          "detail": "The refresh cadence is a bare literal with no named constant or config hook."
+        },
+        {
+          "id": "QUAL-5",
+          "title": "path_label dead_code attribute removed but the label is still unused",
+          "severity": "low",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 62,
+          "evidence": "path_label: gtk::Label,",
+          "detail": "The #[allow(dead_code)] was deleted without wiring the label up, which will now warn on build."
+        }
+      ]
+    },
+    "mvs": {
+      "completion_tokens": 240,
+      "findings": [
+        {
+          "id": "MVS-1",
+          "title": "Four separable changes in one PR — including undisclosed Pi agent support",
+          "severity": "high",
+          "file": "rust/limux-host-linux/src/layout_state.rs",
+          "line": 117,
+          "evidence": "Pi,",
+          "detail": "This diff bundles (1) the accent-color restoration, (2) an entire notification center, (3) Pi agent resume/hook support across layout_state.rs, agent_hooks.rs and the CLI — never mentioned in the description — and (4) dogfood install tooling. Each lands alone; bundled, they are why this 'UI refinement' is +3,545 lines."
+        },
+        {
+          "id": "MVS-2",
+          "title": "Hand-rolled /proc parser instead of the procfs crate",
+          "severity": "low",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 6145,
+          "evidence": "fn parse_proc_net_tcp_line(line: &str) -> Option<(u64, u16)> {",
+          "detail": "The procfs crate already parses /proc/net/tcp correctly, including edge cases this code will rediscover."
+        },
+        {
+          "id": "MVS-3",
+          "title": "The notification center could be its own follow-up PR",
+          "severity": "low",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 72,
+          "evidence": "struct NotificationRecord {",
+          "detail": "The badge/panel work is conceptually separable from the color restoration."
+        }
+      ]
+    },
+    "intent": {
+      "completion_tokens": 261,
+      "findings": [
+        {
+          "id": "INT-1",
+          "title": "The PR removes hardcoded colors, then hardcodes a new one",
+          "severity": "high",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 1447,
+          "evidence": "box-shadow: inset 3px 0 0 0 rgb(46, 194, 126), inset 0 0 0 1px rgba(46, 194, 126, 0.22);",
+          "detail": "The description's stated purpose is restoring system accent colors instead of hardcoded Cmux blue, and it adds a regression test banning rgb(0, 145, 255). Yet .limux-notification-row-finished and .limux-notification-status-finished introduce a new hardcoded green — the exact class of bug this PR exists to remove. The new test cannot catch it: it bans the old string, not the pattern."
+        },
+        {
+          "id": "INT-2",
+          "title": "Description never mentions Pi agent support",
+          "severity": "medium",
+          "file": "rust/limux-cli/src/agent_hooks.rs",
+          "line": 12,
+          "evidence": "spawnSync(\"limux\", [\"--json\", \"hooks\", \"pi\", eventName], {",
+          "detail": "A whole new supported agent ships in a PR described as UI refinements."
+        },
+        {
+          "id": "INT-3",
+          "title": "Testing section overstates coverage",
+          "severity": "low",
+          "file": "README.md",
+          "line": 1,
+          "evidence": "cargo +1.92 test -p limux-host-linux",
+          "detail": "The description implies the workspace was tested but only one crate's test suite is listed."
+        }
+      ]
+    },
+    "tests": {
+      "completion_tokens": 265,
+      "findings": [
+        {
+          "id": "TEST-1",
+          "title": "New pure parsers ship with zero tests",
+          "severity": "medium",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 6145,
+          "evidence": "fn parse_proc_net_tcp_line(line: &str) -> Option<(u64, u16)> {",
+          "detail": "parse_proc_net_tcp_line, parse_proc_fd_socket_inode, and sidebar_ports_summary are trivially unit-testable pure functions parsing an external kernel format — exactly where a silent regression hides — and none has a single test in this diff."
+        },
+        {
+          "id": "TEST-2",
+          "title": "The color regression test bans a string, not the bug class",
+          "severity": "medium",
+          "file": "rust/limux-host-linux/src/keybind_editor.rs",
+          "line": 461,
+          "evidence": "assert!(!KEYBIND_EDITOR_CSS.contains(\"rgb(0, 145, 255)\"));",
+          "detail": "The new test asserts the old Cmux blue never returns, but lets any new hardcoded color sail through — including the hardcoded green shipped in this very diff. A pattern-level check (no rgb() literals outside a palette module) would catch both."
+        },
+        {
+          "id": "TEST-3",
+          "title": "Xvfb smoke test samples a single pixel color",
+          "severity": "low",
+          "file": "scripts/xvfb-smoke-test.sh",
+          "line": 48,
+          "evidence": "selected row sampled as srgb(78,51,42)",
+          "detail": "Pixel-sampling the selected row is brittle across GTK theme changes and will flake."
+        },
+        {
+          "id": "TEST-4",
+          "title": "No test for notification badges above 99",
+          "severity": "low",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 1712,
+          "evidence": "notification_badge_text(unread_count.max(1))",
+          "detail": "Badge overflow formatting (99+) is untested."
+        },
+        {
+          "id": "TEST-5",
+          "title": "No concurrency test for the port refresh path",
+          "severity": "low",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 5977,
+          "evidence": "refresh_sidebar_ports(&state);",
+          "detail": "Concurrent workspace mutation during a refresh tick is untested."
+        }
+      ]
+    },
+    "blast radius": {
+      "completion_tokens": 258,
+      "findings": [
+        {
+          "id": "BLAST-1",
+          "title": "rust-toolchain.toml pins 1.92 for every contributor overnight",
+          "severity": "medium",
+          "file": "rust-toolchain.toml",
+          "line": 2,
+          "evidence": "channel = \"1.92\"",
+          "detail": "Every clone and CI job now resolves Rust 1.92 on next pull. Contributors without it get a toolchain download or a hard failure mid-task, and the PR description does not flag this as a breaking workflow change."
+        },
+        {
+          "id": "BLAST-2",
+          "title": "Unknown notification kinds silently render as Attention",
+          "severity": "medium",
+          "file": "rust/limux-host-linux/src/window.rs",
+          "line": 1618,
+          "evidence": "} else { NotificationVisualKind::Attention }",
+          "detail": "kind is a free-form string accepted across the control protocol under three aliases (kind/status/level). Any future producer value — 'error', 'warning' — falls through to Attention with no log, a silent contract that will misrender the first new kind anyone adds."
+        },
+        {
+          "id": "BLAST-3",
+          "title": "CreateNotification protocol change breaks old CLI clients",
+          "severity": "medium",
+          "file": "rust/limux-host-linux/src/control_bridge.rs",
+          "line": 174,
+          "evidence": "surface_hint: Option<String>,",
+          "detail": "Adding fields to the ControlCommand enum changes the wire contract for existing limux CLI binaries."
+        },
+        {
+          "id": "BLAST-4",
+          "title": "Regenerated app icons break downstream packagers",
+          "severity": "low",
+          "file": "rust/limux-host-linux/icons/app/128.png",
+          "line": 1,
+          "evidence": "icons/app/128.png",
+          "detail": "Binary icon churn can invalidate distro package checksums."
+        },
+        {
+          "id": "BLAST-5",
+          "title": "LD_LIBRARY_PATH export leaks into child terminals",
+          "severity": "low",
+          "file": "scripts/install-local-build.sh",
+          "line": 122,
+          "evidence": "export LD_LIBRARY_PATH=\"$PREFIX/lib/limux${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"",
+          "detail": "If the wrapper's LD_LIBRARY_PATH reaches spawned shells, user builds could link against limux's bundled libraries."
+        }
+      ]
+    }
+  },
+  "critic": {
+    "SEC-1": {
+      "completion_tokens": 74,
+      "votes": [
+        { "verdict": "confirmed", "reason": "Evidence verified: read_dir(\"/proc\") plus per-process cwd/fd readlinks is in the diff at workspace_listening_ports. A GUI app sweeping every process's fd table is a real, flaggable behavior change." },
+        { "verdict": "rejected", "reason": "The same reads are performed by ss, htop, and every system monitor; /proc is world-readable by design and nothing sensitive leaves the process. Behavior note, not a security defect." },
+        { "verdict": "rejected", "reason": "No trust boundary is crossed: the app reads kernel-published metadata available to any process at the same privilege. Downgrade to informational." }
+      ]
+    },
+    "SEC-2": {
+      "completion_tokens": 68,
+      "votes": [
+        { "verdict": "rejected", "reason": "Fabricated evidence. scripts/install-local-build.sh contains no curl invocation at all — it copies locally built artifacts with mktemp + cp, chmods them, and verifies installed binaries against source hashes (sha256 comparison at lines 209-213). The quoted line does not exist in the diff." },
+        { "verdict": "rejected", "reason": "Quote not found in diff; the script is a local-artifact installer with hash verification, no network fetch." },
+        { "verdict": "rejected", "reason": "No such line exists; evidence check fails." }
+      ]
+    },
+    "SEC-3": {
+      "completion_tokens": 61,
+      "votes": [
+        { "verdict": "rejected", "reason": "The control socket is pre-existing trusted local IPC; any process that can reach it could already send notifications before this diff. The new kind/surface fields widen an existing surface, they do not create one. Out of scope for this PR." },
+        { "verdict": "rejected", "reason": "Pre-existing capability; diff only adds optional metadata to it." },
+        { "verdict": "rejected", "reason": "Not introduced by this change." }
+      ]
+    },
+    "SEC-4": {
+      "completion_tokens": 58,
+      "votes": [
+        { "verdict": "rejected", "reason": "gtk::Label::set_label does not interpret Pango markup (that requires set_markup or use-markup=true). Branch names render as inert text. Not exploitable as described." },
+        { "verdict": "rejected", "reason": "set_label is plain text; misread of the GTK API." },
+        { "verdict": "rejected", "reason": "No markup path; rejected." }
+      ]
+    },
+    "ADV-1": {
+      "completion_tokens": 72,
+      "votes": [
+        { "verdict": "confirmed", "reason": "Evidence verified: path_is_within is starts_with after canonicalize, with no depth limit or root exclusion. A workspace at / or $HOME matches nearly every process cwd on the machine and the ports map attributes all their listeners to it. Reproducible from the code as written." },
+        { "verdict": "confirmed", "reason": "Ancestor matching with no guard; the failure input is trivial to construct." },
+        { "verdict": "confirmed", "reason": "Confirmed against the diff; opening a workspace at a broad ancestor mislabels the sidebar." }
+      ]
+    },
+    "ADV-2": {
+      "completion_tokens": 66,
+      "votes": [
+        { "verdict": "confirmed", "reason": "Evidence verified: split_once(':') on a hint without a tab component returns None via the ? operator, and no fallback or log exists at the call site. The control_bridge test only covers the two-part form. Silent drop confirmed." },
+        { "verdict": "confirmed", "reason": "Parser requires pane:tab; single-component hints vanish without diagnostics." },
+        { "verdict": "confirmed", "reason": "Confirmed; degraded routing with no signal." }
+      ]
+    },
+    "ADV-3": {
+      "completion_tokens": 55,
+      "votes": [
+        { "verdict": "rejected", "reason": "u16::from_str_radix returns Err on overflow and the ? operator skips the line — there is no wrap. The claimed bogus-port behavior cannot occur; misread of checked parsing." },
+        { "verdict": "rejected", "reason": "Checked parse; overflow is rejected, not wrapped." },
+        { "verdict": "rejected", "reason": "Handled by Result; rejected." }
+      ]
+    },
+    "ADV-4": {
+      "completion_tokens": 57,
+      "votes": [
+        { "verdict": "rejected", "reason": "The walk uses Path::parent(), which is pure string manipulation on components and terminates at the root in at most path-depth steps. It never follows symlinks, so a cycle on disk cannot make it spin. Speculative." },
+        { "verdict": "rejected", "reason": "parent() cannot cycle; termination is structural." },
+        { "verdict": "rejected", "reason": "No symlink traversal in this loop." }
+      ]
+    },
+    "ADV-5": {
+      "completion_tokens": 49,
+      "votes": [
+        { "verdict": "rejected", "reason": "2^64 notifications at one per millisecond is 584 million years. Below any reasonable risk bar; speculative to the point of noise." },
+        { "verdict": "rejected", "reason": "Not reachable in the lifetime of the software." },
+        { "verdict": "rejected", "reason": "Speculative; rejected." }
+      ]
+    },
+    "PERF-1": {
+      "completion_tokens": 78,
+      "votes": [
+        { "verdict": "confirmed", "reason": "Evidence verified: timeout_add_seconds_local schedules the closure on the GLib main context — the GTK UI thread — and refresh_sidebar_ports synchronously calls workspace_listening_ports, which readlinks every fd of every PID and parses /proc/net/tcp{,6} inline. The stall scales with system-wide fd count, not with limux's own state. Real and user-visible." },
+        { "verdict": "confirmed", "reason": "Main-context scheduling plus O(system fds) synchronous I/O per tick; confirmed from the diff alone." },
+        { "verdict": "confirmed", "reason": "Confirmed; belongs on a worker with results marshalled back." }
+      ]
+    },
+    "PERF-2": {
+      "completion_tokens": 63,
+      "votes": [
+        { "verdict": "rejected", "reason": "Accurate reading, but it is the same root cause and the same fix as PERF-1: move the sweep off the main thread and hoist workspace canonicalization out of the per-process loop. Merged into PERF-1 as a duplicate rather than counted twice." },
+        { "verdict": "rejected", "reason": "Duplicate of PERF-1's remediation; fold it in." },
+        { "verdict": "rejected", "reason": "Same fix, same finding; deduplicated." }
+      ]
+    },
+    "PERF-3": {
+      "completion_tokens": 59,
+      "votes": [
+        { "verdict": "rejected", "reason": "Misread. The provider is stored on AppState precisely so it is created and loaded once; notification visual changes toggle CSS classes on widgets, which does not re-parse the stylesheet. The claimed re-parse path does not exist in the diff." },
+        { "verdict": "rejected", "reason": "Class toggling, not stylesheet reload; rejected." },
+        { "verdict": "rejected", "reason": "No re-parse in the diff." }
+      ]
+    },
+    "PERF-4": {
+      "completion_tokens": 51,
+      "votes": [
+        { "verdict": "rejected", "reason": "ui_font_sizes holds roughly a dozen entries and is read during widget construction, not per-frame. BTreeMap vs HashMap at n=12 is unmeasurable; BTreeMap also gives deterministic serialization order, which the config writer relies on. Micro-optimization noise." },
+        { "verdict": "rejected", "reason": "n is tiny; ordering is a feature here." },
+        { "verdict": "rejected", "reason": "Immaterial at this scale." }
+      ]
+    },
+    "QUAL-1": {
+      "completion_tokens": 70,
+      "votes": [
+        { "verdict": "confirmed", "reason": "Evidence verified: NotificationRecord, its store, badge formatting, and the visual state machine all land in window.rs, taking it past 6,000 lines. This is the file every future feature must now touch; the six-month cost bar is met." },
+        { "verdict": "rejected", "reason": "window.rs was already the app's hub before this PR; the growth continues an existing pattern rather than introducing one, and extracting a module is its own risky refactor that should not gate this PR." },
+        { "verdict": "rejected", "reason": "Pre-existing architectural trend; flagging the PR that continues it is scope creep by the reviewer. File as tech-debt issue, not a PR finding." }
+      ]
+    },
+    "QUAL-2": {
+      "completion_tokens": 52,
+      "votes": [
+        { "verdict": "rejected", "reason": "Style preference. The remove/add pairs are verbose but correct, local, and cheap to change later; this does not meet the mandate's bar of costing time in six months." },
+        { "verdict": "rejected", "reason": "Verbosity, not defect." },
+        { "verdict": "rejected", "reason": "Outside mandate." }
+      ]
+    },
+    "QUAL-3": {
+      "completion_tokens": 54,
+      "votes": [
+        { "verdict": "rejected", "reason": "Fabricated. MIN_FONT_SIZE and MAX_FONT_SIZE are defined once in app_config.rs; settings_editor.rs references the config module rather than re-declaring bounds. No second definition exists in the diff." },
+        { "verdict": "rejected", "reason": "Single definition; evidence check fails." },
+        { "verdict": "rejected", "reason": "No duplication found." }
+      ]
+    },
+    "QUAL-4": {
+      "completion_tokens": 45,
+      "votes": [
+        { "verdict": "rejected", "reason": "A named constant for one literal used once is churn, not clarity. Below the bar." },
+        { "verdict": "rejected", "reason": "Trivial." },
+        { "verdict": "rejected", "reason": "Below the bar." }
+      ]
+    },
+    "QUAL-5": {
+      "completion_tokens": 56,
+      "votes": [
+        { "verdict": "rejected", "reason": "Misread. The attribute was removed because the label is now used: update_sidebar_location_labels writes to path_label in this same diff. No dead-code warning will fire." },
+        { "verdict": "rejected", "reason": "Label is wired up in this diff; rejected." },
+        { "verdict": "rejected", "reason": "Evidence contradicts the claim." }
+      ]
+    },
+    "MVS-1": {
+      "completion_tokens": 76,
+      "votes": [
+        { "verdict": "confirmed", "reason": "Evidence verified: RestorableAgentKind::Pi, pi-hook-sessions.json, pi resume selectors, and CLI pi-hook plumbing are all in the diff, and the word Pi appears nowhere in the PR description. Combined with the install tooling and the notification center, this is four reviewable units shipped as one; the description-vs-content gap is objective." },
+        { "verdict": "confirmed", "reason": "Undisclosed feature confirmed by grep of description vs diff; bundling verified." },
+        { "verdict": "confirmed", "reason": "Confirmed; splitting is a legitimate merge gate for a diff this size." }
+      ]
+    },
+    "MVS-2": {
+      "completion_tokens": 53,
+      "votes": [
+        { "verdict": "rejected", "reason": "Alternative design, not a defect. Taking a dependency for ~60 lines of parsing has its own supply-chain and MSRV cost; the hand-rolled version is testable (see TEST-1, which is the actionable finding here)." },
+        { "verdict": "rejected", "reason": "Dependency trade-off is defensible either way." },
+        { "verdict": "rejected", "reason": "Preference, not finding." }
+      ]
+    },
+    "MVS-3": {
+      "completion_tokens": 48,
+      "votes": [
+        { "verdict": "rejected", "reason": "The notification panel is explicitly named in the PR description as part of the delivered scope; unlike Pi support it is disclosed. Folded into MVS-1's broader split recommendation." },
+        { "verdict": "rejected", "reason": "In stated scope; duplicate of MVS-1 otherwise." },
+        { "verdict": "rejected", "reason": "Covered by MVS-1." }
+      ]
+    },
+    "INT-1": {
+      "completion_tokens": 77,
+      "votes": [
+        { "verdict": "confirmed", "reason": "Evidence verified: rgb(46, 194, 126) appears in .limux-notification-row-finished and .limux-notification-status-finished in the new window.rs CSS, while the description promises system accent colors and the diff adds tests banning the old rgb(0, 145, 255). The contradiction is in the diff itself; libadwaita's @success_color exists for exactly this. Textbook description-vs-diff mismatch." },
+        { "verdict": "confirmed", "reason": "Both the promise and the violation are quotable from the same diff; confirmed." },
+        { "verdict": "confirmed", "reason": "Confirmed; trivially fixable with @success_color, which strengthens rather than weakens the blocking case." }
+      ]
+    },
+    "INT-2": {
+      "completion_tokens": 51,
+      "votes": [
+        { "verdict": "rejected", "reason": "Accurate but identical in substance to MVS-1, which already carries the undisclosed-Pi evidence with wider context. Deduplicated to keep the survivor list non-redundant." },
+        { "verdict": "rejected", "reason": "Duplicate of MVS-1." },
+        { "verdict": "rejected", "reason": "Merged into MVS-1." }
+      ]
+    },
+    "INT-3": {
+      "completion_tokens": 50,
+      "votes": [
+        { "verdict": "rejected", "reason": "Misread. The Testing section lists the exact commands run, including the single-crate test invocation, verbatim. Listing precisely what was run is the opposite of overstating coverage." },
+        { "verdict": "rejected", "reason": "Description is accurate as written." },
+        { "verdict": "rejected", "reason": "No mismatch." }
+      ]
+    },
+    "TEST-1": {
+      "completion_tokens": 69,
+      "votes": [
+        { "verdict": "confirmed", "reason": "Evidence verified: the three parsers are pure functions over kernel text formats and no test in the diff exercises any of them, while less consequential code (badge CSS, font bounds) did receive tests. The asymmetry is real and the functions are the cheapest possible things to test." },
+        { "verdict": "confirmed", "reason": "Zero coverage on new pure parsing of an external format; confirmed." },
+        { "verdict": "confirmed", "reason": "Confirmed against the diff's test files." }
+      ]
+    },
+    "TEST-2": {
+      "completion_tokens": 67,
+      "votes": [
+        { "verdict": "confirmed", "reason": "Evidence verified: the assertions ban the literal strings limux_cmux_accent and rgb(0, 145, 255). INT-1 demonstrates the gap concretely — a new hardcoded color shipped in the same diff that added the test. A pattern-level lint would have caught both; the finding is self-evidencing." },
+        { "verdict": "confirmed", "reason": "The same diff contains the counterexample; confirmed." },
+        { "verdict": "confirmed", "reason": "Confirmed; test tests the past, not the invariant." }
+      ]
+    },
+    "TEST-3": {
+      "completion_tokens": 52,
+      "votes": [
+        { "verdict": "rejected", "reason": "The pixel-sampling approach pre-dates this PR; the diff only extends an existing smoke test. Flakiness is speculative — no failure evidence — and re-architecting the smoke test is out of scope here." },
+        { "verdict": "rejected", "reason": "Pre-existing pattern, extended not introduced." },
+        { "verdict": "rejected", "reason": "Speculative." }
+      ]
+    },
+    "TEST-4": {
+      "completion_tokens": 46,
+      "votes": [
+        { "verdict": "rejected", "reason": "Cosmetic edge case on a badge label; the cost of a wrong 99+ render rounds to zero. Below the bar." },
+        { "verdict": "rejected", "reason": "Trivial." },
+        { "verdict": "rejected", "reason": "Below the bar." }
+      ]
+    },
+    "TEST-5": {
+      "completion_tokens": 49,
+      "votes": [
+        { "verdict": "rejected", "reason": "The refresh runs on the single-threaded GLib main context, so the concurrent-mutation scenario the finding posits cannot occur by construction. Not applicable." },
+        { "verdict": "rejected", "reason": "Single-threaded by design." },
+        { "verdict": "rejected", "reason": "Scenario impossible." }
+      ]
+    },
+    "BLAST-1": {
+      "completion_tokens": 65,
+      "votes": [
+        { "verdict": "confirmed", "reason": "Evidence verified: rust-toolchain.toml with channel = \"1.92\" is new in this diff and rustup honors it on every command in the repo. Every contributor's next pull changes their build environment; the description frames it as dogfood tooling, not as a workflow change affecting all contributors and CI." },
+        { "verdict": "confirmed", "reason": "Repo-wide toolchain pin confirmed; impact statement accurate." },
+        { "verdict": "confirmed", "reason": "Confirmed; needs a callout in the description and a CI check, not a revert." }
+      ]
+    },
+    "BLAST-2": {
+      "completion_tokens": 64,
+      "votes": [
+        { "verdict": "confirmed", "reason": "Evidence verified: the else arm maps every unrecognized kind string to Attention, and the bridge accepts the value under three aliases with no validation or logging. The first producer to send 'error' will render as attention silently. Cheap fix (log + explicit fallback), real contract gap." },
+        { "verdict": "confirmed", "reason": "Silent fallback across an IPC boundary; confirmed." },
+        { "verdict": "confirmed", "reason": "Confirmed from the match arms." }
+      ]
+    },
+    "BLAST-3": {
+      "completion_tokens": 58,
+      "votes": [
+        { "verdict": "rejected", "reason": "Misread of the compatibility direction. The new fields are Option-al and parsed via optional_string, so requests from older CLI binaries that omit them deserialize fine. ControlCommand is an internal enum, not the wire format." },
+        { "verdict": "rejected", "reason": "Optional fields; old clients unaffected." },
+        { "verdict": "rejected", "reason": "No wire break." }
+      ]
+    },
+    "BLAST-4": {
+      "completion_tokens": 47,
+      "votes": [
+        { "verdict": "rejected", "reason": "Icon files keep the same paths and dimensions; packagers hash the release tarball, not individual assets. No downstream contract depends on icon byte-identity. Speculative." },
+        { "verdict": "rejected", "reason": "No consumer of icon hashes exists." },
+        { "verdict": "rejected", "reason": "Speculative." }
+      ]
+    },
+    "BLAST-5": {
+      "completion_tokens": 55,
+      "votes": [
+        { "verdict": "rejected", "reason": "Misread. The export happens inside the generated wrapper script immediately before exec of the host binary; spawned terminal shells get their environment from the host's PTY setup, which does not inherit the wrapper-scoped variable. The leak path claimed does not exist." },
+        { "verdict": "rejected", "reason": "Scoped to the wrapper process; rejected." },
+        { "verdict": "rejected", "reason": "No leak path." }
+      ]
+    }
+  },
+  "blocking": {
+    "SEC-1": { "completion_tokens": 55, "blocking": false, "reason": "Real behavior change worth documenting, but no data leaves the machine and the reads are unprivileged. Ship with a release-note line; revisit if sandboxed packaging (Flatpak) is planned." },
+    "ADV-1": { "completion_tokens": 57, "blocking": false, "reason": "Wrong-but-cosmetic output in a sidebar pill; annoying, not damaging. Fix by bounding the ancestor match at the workspace root, can land as a fast follow." },
+    "ADV-2": { "completion_tokens": 54, "blocking": false, "reason": "Notification still arrives at the workspace level, so the failure degrades gracefully. Add a debug log and a parser test in a follow-up." },
+    "PERF-1": { "completion_tokens": 62, "blocking": true, "reason": "Recurring main-thread stalls in a terminal emulator are felt by every user within minutes of merging — typing latency every 5 seconds. Must move off the main thread before merge; the fix is mechanical (worker thread + channel)." },
+    "QUAL-1": { "completion_tokens": 53, "blocking": false, "reason": "Real debt, wrong gate. Extracting a notifications module mid-PR would balloon the diff further; file it as an issue and require the extraction before the next notification feature." },
+    "MVS-1": { "completion_tokens": 61, "blocking": true, "reason": "An undisclosed feature (Pi agent support) cannot be reviewed under a description that does not admit it exists. Split Pi support and install tooling into their own PRs; what remains is the reviewable UI change this PR claims to be." },
+    "INT-1": { "completion_tokens": 60, "blocking": true, "reason": "The diff violates its own stated purpose and its own new regression test's intent. One-line fix to @success_color plus a pattern-level test; blocking because merging it would enshrine the exact bug class this PR exists to eliminate." },
+    "TEST-1": { "completion_tokens": 52, "blocking": false, "reason": "Should accompany the PERF-1 rework — the parsers will be touched anyway when the sweep moves off-thread. Request in the same revision, not a separate gate." },
+    "TEST-2": { "completion_tokens": 51, "blocking": false, "reason": "Fold into the INT-1 fix: when the green moves to @success_color, upgrade the test to ban rgb() literals wholesale. Not independently blocking." },
+    "BLAST-1": { "completion_tokens": 50, "blocking": false, "reason": "Legitimate change, wrong silence. Requires a description callout and a note in the README migration section; not worth blocking a merge over." },
+    "BLAST-2": { "completion_tokens": 49, "blocking": false, "reason": "Add a warn-level log on unknown kinds in this PR; the enum extension can wait until a second kind actually exists." }
+  },
+  "adjudicator": {
+    "completion_tokens": 214,
+    "verdict": "REQUEST_CHANGES",
+    "blocking": ["PERF-1", "INT-1", "MVS-1"],
+    "summary": "The visual work is good and most of it is mergeable as-is. Three things gate it. First, the sidebar ports feature performs a full /proc sweep on the GTK main thread every five seconds — in a terminal emulator, that is user-visible input latency, and it must move to a worker thread before merge. Second, the diff reintroduces the exact class of defect it exists to remove: a new hardcoded color, rgb(46, 194, 126), shipped alongside a regression test that only bans the old one — replace it with @success_color and upgrade the test to ban the pattern. Third, an entire undisclosed feature (Pi agent support) and the install tooling are riding along in a PR described as UI refinements; split them out so each can be reviewed under a description that admits they exist. The remaining eight confirmed findings are advisory: request the parser tests and the unknown-kind log line in the same revision, and file the window.rs extraction as tracked debt. With the three blockers addressed, this merges."
+  }
+}
