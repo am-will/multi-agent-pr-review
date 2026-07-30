@@ -94,11 +94,56 @@ print("Live runtime ready. Add CEREBRAS_API_KEY in Colab Secrets before continui
 
 for cell in live["cells"]:
     text = "".join(cell.get("source", []))
+    if 'DIFF = pathlib.Path("fixtures/pr103.diff").read_text()' not in text:
+        continue
+    text = text.replace(
+        'DIFF = pathlib.Path("fixtures/pr103.diff").read_text()',
+        'FULL_DIFF = pathlib.Path("fixtures/pr103.diff").read_text()\n'
+        "MAX_DIFF_CHARS = 175_000  # leaves headroom inside Gemma 4 31B's 65,536-token context\n"
+        'DIFF = FULL_DIFF[:MAX_DIFF_CHARS]',
+    )
+    text += (
+        '\n\nif len(FULL_DIFF) > len(DIFF):\n'
+        '    print(f"Live context budget: reviewing {len(DIFF):,} of {len(FULL_DIFF):,} diff characters.")'
+    )
+    cell["source"] = source(text)
+    break
+
+for cell in live["cells"]:
+    text = "".join(cell.get("source", []))
+    replay_only = '''for fid in ("SEC-2", "QUAL-3", "PERF-2"):
+    print(f"KILLED [{fid}]  {killed[fid]['reason']}\\n")
+'''
+    if replay_only not in text:
+        continue
+    live_summary = '''if killed:
+    for fid, result in list(killed.items())[:3]:
+        print(f"KILLED [{fid}]  {result['reason']}\\n")
+else:
+    print("No findings were rejected in this live run.\\n")
+'''
+    cell["source"] = source(text.replace(replay_only, live_summary))
+    break
+
+for cell in live["cells"]:
+    text = "".join(cell.get("source", []))
+    marker = '    batch = json.loads(resp.choices[0].message.content)["findings"]\n'
+    if marker not in text:
+        continue
+    unique_ids = marker + '''    for index, finding in enumerate(batch, 1):
+        finding["id"] = f"{name.upper().replace(' ', '_')}-{index}"
+'''
+    cell["source"] = source(text.replace(marker, unique_ids))
+    break
+
+for cell in live["cells"]:
+    text = "".join(cell.get("source", []))
     if "from replay import AsyncCerebras" not in text:
         continue
     cell["source"] = source(
         """
-import asyncio, json, os, time
+import asyncio, json, os, random, time
+import cerebras.cloud.sdk as cerebras_sdk
 from cerebras.cloud.sdk import AsyncCerebras
 
 # In Colab: click the key icon in the left sidebar and add CEREBRAS_API_KEY.
@@ -122,7 +167,7 @@ MODEL_OVERRIDE = secret("CEREBRAS_MODEL")
 if not API_KEY:
     raise RuntimeError("Add CEREBRAS_API_KEY to Colab Secrets, then rerun this cell.")
 
-client = AsyncCerebras(api_key=API_KEY)
+client = AsyncCerebras(api_key=API_KEY, max_retries=2)
 catalog = await client.models.list()
 AVAILABLE_MODELS = [model.id for model in catalog.data]
 
@@ -148,19 +193,60 @@ if "gemma" not in MODEL.lower() and not MODEL_OVERRIDE:
 
 RESPONSES, STAGE = [], {}
 
-async def review(system: str, user: str):
-    t0 = time.perf_counter()
-    resp = await client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.0,
+def json_contract(system):
+    if "adjudicator" in system:
+        return (
+            'Return exactly one JSON object with this shape: '
+            '{"verdict":"APPROVE or REQUEST_CHANGES","blocking":["FINDING-ID"],'
+            '"summary":"concise final assessment"}.'
+        )
+    if "merge-gate" in system:
+        return (
+            'Return exactly one JSON object with this shape: '
+            '{"finding_id":"the supplied finding ID","blocking":true,'
+            '"reason":"concise gate rationale"}.'
+        )
+    if "critic" in system:
+        return (
+            'Return exactly one JSON object with this shape: '
+            '{"finding_id":"the supplied finding ID",'
+            '"verdict":"confirmed or rejected","reason":"concise audit rationale"}.'
+        )
+    return (
+        'Return exactly one JSON object with this shape: '
+        '{"findings":[{"id":"CATEGORY-1","severity":"high or medium or low",'
+        '"title":"concise title","file":"path","line":1,'
+        '"evidence":"verifiable evidence","reasoning":"why it matters"}]}. '
+        'If there are no findings, return {"findings":[]}.'
     )
-    RESPONSES.append(resp)
-    return resp, time.perf_counter() - t0
+
+async def review(system: str, user: str):
+    attempts = 8
+    for attempt in range(attempts):
+        t0 = time.perf_counter()
+        try:
+            resp = await client.chat.completions.create(
+                model=MODEL,
+                messages=[
+                    {"role": "system", "content": system + "\\n\\n" + json_contract(system)},
+                    {"role": "user", "content": user},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.0,
+                max_completion_tokens=1200,
+            )
+            RESPONSES.append(resp)
+            return resp, time.perf_counter() - t0
+        except (
+            cerebras_sdk.RateLimitError,
+            cerebras_sdk.APIConnectionError,
+            cerebras_sdk.InternalServerError,
+        ):
+            if attempt == attempts - 1:
+                raise
+            delay = min(30, 2 ** attempt) + random.random()
+            print(f"Cerebras busy; retrying in {delay:.1f}s ({attempt + 1}/{attempts - 1})")
+            await asyncio.sleep(delay)
 
 print("Live model:", MODEL)
 
@@ -184,7 +270,12 @@ for f in json.loads(resp.choices[0].message.content)["findings"]:
 for cell in live["cells"]:
     text = "".join(cell.get("source", []))
     if "tokens through Kimi" in text:
-        cell["source"] = source(text.replace("tokens through Kimi", "tokens through Gemma"))
+        text = text.replace("tokens through Kimi", "tokens through Gemma")
+        text = text.replace(
+            "serial_panel / wall",
+            "serial_panel / STAGE['panel']",
+        )
+        cell["source"] = source(text)
 
 (ROOT / "demo_live.ipynb").write_text(
     json.dumps(live, indent=1, ensure_ascii=False) + "\n",
