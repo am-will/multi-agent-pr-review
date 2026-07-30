@@ -94,6 +94,31 @@ print("Live runtime ready. Add CEREBRAS_API_KEY in Colab Secrets before continui
 
 for cell in live["cells"]:
     text = "".join(cell.get("source", []))
+    if "## 8 · The dial" in text:
+        cell["source"] = source(
+            text.replace(
+                "## 8 · The dial — majority-vote critics",
+                "## 8 · Optional reliability dial — disabled by default",
+            )
+            + "\n\nThe standard live run skips this expensive stage. Set "
+            "`RUN_MAJORITY_VOTE = True` below only when you want three independent "
+            "critic votes per finding."
+        )
+    if "CRITIC_VOTES = 3" in text:
+        indented = "\n".join(
+            ("    " + line if line else "")
+            for line in text.splitlines()
+        )
+        cell["source"] = source(
+            "RUN_MAJORITY_VOTE = False\n\n"
+            "if RUN_MAJORITY_VOTE:\n"
+            + indented
+            + "\nelse:\n"
+            '    print("Majority-vote critics skipped. Set RUN_MAJORITY_VOTE = True to run them.")'
+        )
+
+for cell in live["cells"]:
+    text = "".join(cell.get("source", []))
     if 'DIFF = pathlib.Path("fixtures/pr103.diff").read_text()' not in text:
         continue
     text = text.replace(
